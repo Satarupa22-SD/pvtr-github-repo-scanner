@@ -303,8 +303,10 @@ func (p *Payload) GetLicenseAtRef(ref string) (RefLicense, bool, error) {
 		return RefLicense{}, false, fmt.Errorf("payload missing required repository data")
 	}
 	if p.cache != nil {
-		if entry, ok := p.cache.refLicenses[ref]; ok {
-			return entry.license, entry.found, entry.err
+		if p.cache.refLicenses != nil {
+			if entry, ok := p.cache.refLicenses[ref]; ok {
+				return entry.license, entry.found, entry.err
+			}
 		}
 	}
 	license, found, err := p.LicenseAtRef(ref)
