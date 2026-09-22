@@ -75,6 +75,7 @@ func (r *RestData) getPrivateVulnReporting() error {
 // Presence alone is answered from already-cached directory listings; the content
 // fetch is the only added API call, and it happens only when the file exists so
 // that its body can back the SECURITY.md contact fallback.
+
 func (r *RestData) loadSecurityPolicy() error {
 	path := r.checkFile("security.md")
 	if path == "" {
