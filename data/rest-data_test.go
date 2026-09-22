@@ -626,7 +626,6 @@ func TestSetupPropagatesDomainErrors(t *testing.T) {
 	assert.NotContains(t, err.Error(), "private vulnerability reporting", "an expected absence (404) must not be reported as a failure")
 	assert.NotContains(t, err.Error(), "releases", "a domain that succeeded must not appear in the joined error")
 	assert.NotContains(t, err.Error(), "security advisories", "a domain that succeeded must not appear in the joined error")
-
 	assert.False(t, rest.WorkflowPermissionsObserved, "the failed domain must leave its data unobserved")
 	assert.False(t, rest.PrivateVulnReporting.Known, "an expected absence still leaves Known false")
 	assert.NoError(t, rest.ReleasesError, "a domain that succeeded must not carry an error")

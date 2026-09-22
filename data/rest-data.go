@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -55,12 +56,20 @@ type RepoContent struct {
 }
 
 type ReleaseData struct {
-	Id      int            `json:"id"`
-	Name    string         `json:"name"`
-	TagName string         `json:"tag_name"`
-	URL     string         `json:"url"`
-	Draft   bool           `json:"draft"`
-	Assets  []ReleaseAsset `json:"assets"`
+	Id      int    `json:"id"`
+	Name    string `json:"name"`
+	TagName string `json:"tag_name"`
+	URL     string `json:"url"`
+	Draft   bool   `json:"draft"`
+	// Prerelease is GitHub's own flag for a release marked as not
+	// production-ready; it must be excluded from "latest published release"
+	// selection alongside drafts.
+	Prerelease bool `json:"prerelease"`
+	// PublishedAt is an RFC3339 timestamp. The /releases listing endpoint is
+	// ordered by creation time, not publish time, so selecting "the latest"
+	// release requires comparing this field rather than trusting list order.
+	PublishedAt string         `json:"published_at"`
+	Assets      []ReleaseAsset `json:"assets"`
 }
 
 type ReleaseAsset struct {
@@ -141,6 +150,25 @@ type unexpectedStatusError struct {
 
 func (e *unexpectedStatusError) Error() string {
 	return fmt.Sprintf("unexpected response: %s", e.status)
+}
+
+// isExpectedAbsence reports whether err is MakeApiCall answering that an
+// optional feature is not available for this repository (rather than the
+// request failing outright). It checks the typed status code MakeApiCall
+// attaches to non-200 responses rather than matching status text as a
+// substring of the error message, since a repo or owner literally named
+// "403" or "404" would otherwise make a real outage look like an absence.
+func isExpectedAbsence(err error, codes ...int) bool {
+	var statusErr *unexpectedStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	for _, code := range codes {
+		if statusErr.statusCode == code {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RestData) MakeApiCall(endpoint string, isGithub bool) (body []byte, err error) {
@@ -235,7 +263,7 @@ func (r *RestData) checkFile(filename string) (filepath string) {
 // checkFileInSubdir returns the path to filename within the given subdirectory
 // (case-insensitive), or "" when the directory or file is absent. It lets build
 // documentation stored outside the root and .github (e.g. docs/BUILDING.md) be
-// discovered per OSPS-DO-07.01.
+// discovered.
 func (r *RestData) checkFileInSubdir(dir, filename string) string {
 	subdir, err := r.getSubdirContents(dir)
 	if err != nil {
@@ -305,10 +333,10 @@ func (r *RestData) HasSupportMarkdown() bool {
 }
 
 // buildInstructionFiles are well-known files whose presence indicates the
-// project documents how to build the software from source, satisfying
-// OSPS-DO-07.01 as developer task documentation or build automation. Matching
-// is case-insensitive (see checkFile), so a single canonical spelling covers
-// common variants such as "makefile" or "MAKEFILE".
+// project documents how to build the software from source, as developer task
+// documentation or build automation. Matching is case-insensitive (see
+// checkFile), so a single canonical spelling covers common variants such as
+// "makefile" or "MAKEFILE".
 var buildInstructionFiles = []string{
 	"Makefile",
 	"GNUmakefile",
@@ -322,8 +350,8 @@ var buildInstructionFiles = []string{
 }
 
 // buildInstructionHeadings are documentation section headings that indicate the
-// project explains how to build or set up the software from source per
-// OSPS-DO-07.01. Matching is case-insensitive and substring-based (see
+// project explains how to build or set up the software from source.
+// Matching is case-insensitive and substring-based (see
 // hasBuildInstructionHeading), so short roots such as "build" and "compil"
 // intentionally cover their variants ("building", "build from source",
 // "compiling", "compilation", etc.).
@@ -347,7 +375,7 @@ var buildInstructionHeadingExclusions = []string{
 }
 
 // hasBuildInstructionHeading reports whether any of the provided document
-// headings references build-from-source instructions per OSPS-DO-07.01.
+// headings references build-from-source instructions.
 func hasBuildInstructionHeading(headings []string) bool {
 	for _, heading := range headings {
 		normalized := strings.ToLower(strings.TrimSpace(heading))
@@ -375,7 +403,7 @@ func isExcludedBuildHeading(normalized string) bool {
 }
 
 // HasBuildInstructions returns true when the repository documents how to build
-// the software from source per OSPS-DO-07.01. It is satisfied by a well-known
+// the software from source. It is satisfied by a well-known
 // build automation or build documentation file (e.g. Makefile, BUILDING.md) in
 // the repository root, .github, or docs directory, or by a build-related
 // section heading in the README or CONTRIBUTING guide.
@@ -574,6 +602,145 @@ func (r *RestData) getReleases() error {
 	}
 }
 
+// RefLicense describes the license GitHub detects in the repository tree at a
+// specific git ref.
+type RefLicense struct {
+	// SpdxId is GitHub's classification of the license file, or "NOASSERTION"
+	// when a license file exists but could not be identified.
+	SpdxId string
+	// Path is the location of the license file within the tree at the ref.
+	Path string
+}
+
+// ErrRefUnresolvable is returned by RefExists when GitHub reports no commit
+// at the given ref (a deleted or re-pointed tag). Distinguishing this from
+// "ref exists but has no license file" matters because a 404 from the
+// license-at-ref endpoint means the same thing in both cases.
+var ErrRefUnresolvable = errors.New("ref does not resolve to a commit")
+
+// ErrRateLimited is returned when GitHub responds 403, which the retry layer
+// treats as permanent rather than transient. A caller basing a verdict on a
+// missing signal should treat this differently from "the signal is absent",
+// since a rate-limited scan cannot observe the signal at all.
+var ErrRateLimited = errors.New("request was rate limited (403)")
+
+// RefExists reports whether ref resolves to a commit. It is used to
+// disambiguate a 404 from the license-at-ref endpoint: GitHub returns the same
+// 404 whether the ref has no recognized license file or the ref itself no
+// longer resolves (e.g. a tag deleted or force-moved after a release was
+// published), and only the latter should be reported as ambiguous rather than
+// "no license found".
+func (r *RestData) RefExists(ref string) (bool, error) {
+	var logger hclog.Logger
+	if r.Config != nil {
+		logger = r.Config.Logger
+	}
+	if logger == nil {
+		logger = hclog.NewNullLogger()
+	}
+	if r.HttpClient == nil {
+		r.HttpClient = &http.Client{}
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/commits/%s", APIBase, r.owner, r.repo, url.QueryEscape(ref))
+	var exists bool
+	err := withRetry(logger, fmt.Sprintf("GET %s", endpoint), func() error {
+		request, err := http.NewRequest("GET", endpoint, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+r.token)
+		response, err := r.HttpClient.Do(request)
+		if err != nil {
+			return fmt.Errorf("error making http call: %s", err.Error())
+		}
+		defer func() { _ = response.Body.Close() }()
+		switch {
+		case response.StatusCode == http.StatusNotFound:
+			exists = false
+			return nil
+		case response.StatusCode == http.StatusForbidden:
+			return ErrRateLimited
+		case response.StatusCode != http.StatusOK:
+			return fmt.Errorf("unexpected response: %s", response.Status)
+		default:
+			exists = true
+			return nil
+		}
+	})
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// LicenseAtRef fetches the license GitHub detects for the repository at the
+// given git ref (typically a release tag). GitHub's auto-generated release
+// archives contain the tree at the tag, so this observes the license actually
+// shipped with a release, which the default-branch license may no longer match.
+//
+// A 404 means GitHub found no license file at that ref; it is reported as
+// found=false with a nil error, distinct from request failures. MakeApiCall is
+// not used here because its uniform non-200 error cannot make that distinction.
+// A 403 is reported as ErrRateLimited rather than a generic error, since a
+// caller basing a verdict on this lookup's absence needs to tell "checked and
+// found nothing" apart from "could not check".
+func (r *RestData) LicenseAtRef(ref string) (license RefLicense, found bool, err error) {
+	var logger hclog.Logger
+	if r.Config != nil {
+		logger = r.Config.Logger
+	}
+	if logger == nil {
+		logger = hclog.NewNullLogger()
+	}
+	if r.HttpClient == nil {
+		r.HttpClient = &http.Client{}
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/license?ref=%s", APIBase, r.owner, r.repo, url.QueryEscape(ref))
+	err = withRetry(logger, fmt.Sprintf("GET %s", endpoint), func() error {
+		request, err := http.NewRequest("GET", endpoint, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+r.token)
+		response, err := r.HttpClient.Do(request)
+		if err != nil {
+			return fmt.Errorf("error making http call: %s", err.Error())
+		}
+		defer func() { _ = response.Body.Close() }()
+		if response.StatusCode == http.StatusNotFound {
+			// No license file exists at this ref. That is an observation about
+			// the release, not a request failure.
+			return nil
+		}
+		if response.StatusCode == http.StatusForbidden {
+			return ErrRateLimited
+		}
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected response: %s", response.Status)
+		}
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return err
+		}
+		var decoded struct {
+			Path    string `json:"path"`
+			License struct {
+				SpdxId string `json:"spdx_id"`
+			} `json:"license"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return fmt.Errorf("failed to decode license data for ref %q: %w", ref, err)
+		}
+		license = RefLicense{SpdxId: decoded.License.SpdxId, Path: decoded.Path}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return RefLicense{}, false, err
+	}
+	return license, found, nil
+}
+
 func (r *RestData) getWorkflowPermissions() error {
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/actions/permissions", APIBase, r.owner, r.repo)
 	responseData, err := r.MakeApiCall(endpoint, true)
@@ -604,25 +771,6 @@ func (r *RestData) getWorkflowPermissions() error {
 	}
 	r.WorkflowPermissionsObserved = true
 	return nil
-}
-
-// isExpectedAbsence reports whether err is MakeApiCall answering that an
-// optional feature is not available for this repository (rather than the
-// request failing outright). It checks the typed status code MakeApiCall
-// attaches to non-200 responses rather than matching status text as a
-// substring of the error message, since a repo or owner literally named
-// "403" or "404" would otherwise make a real outage look like an absence.
-func isExpectedAbsence(err error, codes ...int) bool {
-	var statusErr *unexpectedStatusError
-	if !errors.As(err, &statusErr) {
-		return false
-	}
-	for _, code := range codes {
-		if statusErr.statusCode == code {
-			return true
-		}
-	}
-	return false
 }
 
 // IsCodeRepo returns true if the repository contains any programming languages.
