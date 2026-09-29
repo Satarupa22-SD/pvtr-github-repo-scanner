@@ -349,9 +349,9 @@ func RequiresNonAuthorApproval(payload data.Payload) (result gemara.Result, mess
 		}
 		staleGapClosed := ruleset.RequireLastPushApproval || ruleset.DismissStaleReviews || classicStaleGapClosed
 		if staleGapClosed {
-			return gemara.Passed, fmt.Sprintf("The default branch requires %d non-author approving review(s), and commits pushed after an approval cannot merge unreviewed", approvals), gemara.High
+			return gemara.Passed, fmt.Sprintf("The default branch requires %d approving review(s), and commits pushed after an approval cannot merge unreviewed", approvals), gemara.Medium
 		}
-		return gemara.NeedsReview, fmt.Sprintf("The default branch requires %d non-author approving review(s), but neither last-push approval nor stale-review dismissal is enabled, so commits pushed after an approval can merge unreviewed; confirm the review process covers this gap", approvals), gemara.Medium
+		return gemara.NeedsReview, fmt.Sprintf("The default branch requires %d approving review(s), but neither last-push approval nor stale-review dismissal is enabled, so commits pushed after an approval can merge unreviewed; confirm the review process covers this gap", approvals), gemara.Medium
 	}
 
 	// The publicly readable branch `protected` flag being false proves no

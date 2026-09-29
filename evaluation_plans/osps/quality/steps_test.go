@@ -1471,8 +1471,8 @@ func TestRequiresNonAuthorApproval(t *testing.T) {
 				}},
 			},
 			wantResult:     gemara.Passed,
-			wantMsgPart:    "requires 1 non-author approving review(s)",
-			wantConfidence: gemara.High,
+			wantMsgPart:    "requires 1 approving review(s)",
+			wantConfidence: gemara.Medium,
 		},
 		{
 			// This repository's own shape from issue #440: ruleset requires one
@@ -1498,8 +1498,8 @@ func TestRequiresNonAuthorApproval(t *testing.T) {
 				}},
 			},
 			wantResult:     gemara.Passed,
-			wantMsgPart:    "requires 2 non-author approving review(s)",
-			wantConfidence: gemara.High,
+			wantMsgPart:    "requires 2 approving review(s)",
+			wantConfidence: gemara.Medium,
 		},
 		{
 			name: "classic protection observed by admin passes",
@@ -1511,8 +1511,8 @@ func TestRequiresNonAuthorApproval(t *testing.T) {
 				},
 			},
 			wantResult:     gemara.Passed,
-			wantMsgPart:    "requires 2 non-author approving review(s)",
-			wantConfidence: gemara.High,
+			wantMsgPart:    "requires 2 approving review(s)",
+			wantConfidence: gemara.Medium,
 		},
 		{
 			name: "no observed requirement without admin needs review",
@@ -1573,8 +1573,8 @@ func TestRequiresNonAuthorApproval(t *testing.T) {
 				}},
 			},
 			wantResult:     gemara.Passed,
-			wantMsgPart:    "requires 1 non-author approving review(s)",
-			wantConfidence: gemara.High,
+			wantMsgPart:    "requires 1 approving review(s)",
+			wantConfidence: gemara.Medium,
 		},
 		{
 			// Classic branch protection can close the stale-approval gap with
@@ -1589,8 +1589,8 @@ func TestRequiresNonAuthorApproval(t *testing.T) {
 				},
 			},
 			wantResult:     gemara.Passed,
-			wantMsgPart:    "requires 2 non-author approving review(s)",
-			wantConfidence: gemara.High,
+			wantMsgPart:    "requires 2 approving review(s)",
+			wantConfidence: gemara.Medium,
 		},
 		{
 			name: "classic approval without stale protection needs review",
@@ -1614,8 +1614,8 @@ func TestRequiresNonAuthorApproval(t *testing.T) {
 				}},
 			},
 			wantResult:     gemara.Passed,
-			wantMsgPart:    "requires 3 non-author approving review(s)",
-			wantConfidence: gemara.High,
+			wantMsgPart:    "requires 3 approving review(s)",
+			wantConfidence: gemara.Medium,
 		},
 		{
 			name: "non-admin with unobserved rulesets reports the ruleset gap",
